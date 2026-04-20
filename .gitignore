@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local runtime outputs
+output_images/
+debug_sessions/
+progress_dreamina.json
+*.har
+profile_backups/
+
+# OS/editor
+.DS_Store
+chrome_profiles/
+chrome_profiles.zip

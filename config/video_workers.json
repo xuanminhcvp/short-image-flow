@@ -1,21 +1,20 @@
 {
   "_comment": "Config hệ thống multi kịch bản song song. Mỗi video_worker = 1 Chrome riêng với 1 kịch bản riêng.",
   "_proxy_note": "Chromium không hỗ trợ SOCKS5 auth trực tiếp. Chạy 'python3 proxy_bridge.py start' trước để gost làm bridge. Chrome dùng localhost:1100X (không cần auth), gost forward đến proxy thật.",
-
   "image_worker": {
     "_comment": "Chrome tạo ảnh reference — dùng cho TẤT CẢ kịch bản, tạo tuần tự từng kịch bản.",
     "profile_dir": "chrome_profiles/dreamina_playwright_profile_image",
     "proxy": null
   },
-
   "video_workers": [
     {
       "worker_id": "video_1",
-      "profile_dir": "chrome_profiles/dreamina_playwright_profile_video_1",
+      "profile_dir": "chrome_profiles/dreamina_playwright_profile_video_1_fresh_20260420",
       "proxy": "socks5://127.0.0.1:11001",
       "proxy_real": "socks5://HPseFo:IpmDzM@118.70.187.141:55508",
       "scenario_dir": "scenarios/kich_ban_A",
-      "_note": "IP: 118.70.187.141 — qua bridge localhost:11001"
+      "_note": "IP: 118.70.187.141 — qua bridge localhost:11001 | FRESH_PROFILE_20260420",
+      "profile_dir_old_backup": "chrome_profiles/dreamina_playwright_profile_video_1"
     },
     {
       "worker_id": "video_2",

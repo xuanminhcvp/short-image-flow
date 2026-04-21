@@ -32,7 +32,7 @@ from urllib.parse import urljoin, urlparse, parse_qs, quote
 from playwright.async_api import async_playwright
 
 # ── Import service tham chiếu ảnh (reference image UI) ──
-from flow_reference_attach_service import (
+from services.flow_reference_attach_service import (
     verify_reference_image_attached,
     recover_flow_editor_if_in_scene_page,
     attach_reference_from_library_by_name,
@@ -40,7 +40,7 @@ from flow_reference_attach_service import (
     upload_reference_image_for_video,
     _accept_first_time_upload_consent,
 )
-from flow_reference_service import (
+from services.flow_reference_service import (
     get_reference_image_path,
     get_reference_search_name,
     list_reference_image_paths,

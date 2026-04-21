@@ -331,6 +331,7 @@ async def download_flow_images(
     new_srcs: list,
     output_dir: str,
     prefix: str = "img",
+    max_download: int | None = None,
     log_cb: Callable[[str, str], None] | None = None,
 ) -> int:
     """
@@ -345,6 +346,9 @@ async def download_flow_images(
         new_srcs: Danh sách URL ảnh cần tải (từ wait_for_flow_images)
         output_dir: Thư mục lưu ảnh (sẽ tạo nếu chưa có)
         prefix: Tiền tố tên file (vd: "scene_01" → "scene_01_img1.png")
+        max_download: Giới hạn số ảnh cần tải.
+            - None / <=0: tải toàn bộ ảnh trong new_srcs.
+            - >0: chỉ tải tối đa N ảnh đầu tiên.
         log_cb: Callback log tuỳ chọn
 
     Returns:
@@ -360,7 +364,17 @@ async def download_flow_images(
     saved = 0
     safe_prefix = _safe_filename(prefix)
 
-    for idx, src in enumerate(new_srcs):
+    # Cho phép giới hạn số ảnh tải để tối ưu băng thông/dung lượng.
+    # Dùng nhiều nhất ở stage reference: chỉ cần 1 ảnh đại diện.
+    srcs_to_download = list(new_srcs or [])
+    if max_download is not None and int(max_download) > 0:
+        srcs_to_download = srcs_to_download[: int(max_download)]
+        _cb(
+            f"Giới hạn tải ảnh: {len(srcs_to_download)}/{len(new_srcs or [])} (max_download={int(max_download)})",
+            "DBG",
+        )
+
+    for idx, src in enumerate(srcs_to_download):
         filepath = os.path.join(output_dir, f"{safe_prefix}_img{idx + 1}.png")
         try:
             # ── Phương thức 1: Fetch API ──
@@ -418,7 +432,10 @@ async def download_flow_images(
         except Exception as exc:
             _cb(f"Lỗi tải ảnh #{idx + 1}: {exc}", "ERR")
 
-    _cb(f"Tổng: {saved}/{len(new_srcs)} ảnh đã tải", "OK" if saved == len(new_srcs) else "WARN")
+    _cb(
+        f"Tổng: {saved}/{len(srcs_to_download)} ảnh đã tải",
+        "OK" if saved == len(srcs_to_download) else "WARN",
+    )
     return saved
 
 
@@ -432,6 +449,7 @@ async def run_flow_image_capture(
     prefix: str = "img",
     expected: int = 1,
     timeout: int = 120,
+    max_download: int | None = None,
     log_cb: Callable[[str, str], None] | None = None,
 ) -> dict:
     """
@@ -451,6 +469,7 @@ async def run_flow_image_capture(
         - saved: số ảnh đã tải
         - new_srcs: list URL ảnh mới
         - baseline_count: số ảnh baseline
+        - download_limit: giới hạn tải đã dùng (nếu có)
     """
     def _cb(msg: str, level: str = "DBG") -> None:
         if callable(log_cb):
@@ -482,6 +501,7 @@ async def run_flow_image_capture(
         new_srcs=new_srcs,
         output_dir=output_dir,
         prefix=prefix,
+        max_download=max_download,
         log_cb=log_cb,
     )
 
@@ -490,6 +510,7 @@ async def run_flow_image_capture(
         "saved": saved,
         "new_srcs": new_srcs,
         "baseline_count": len(baseline),
+        "download_limit": (int(max_download) if max_download is not None else None),
     }
 
 

@@ -511,12 +511,16 @@ def parse_character_file(path: str) -> dict[str, str]:
 
         [TÊN NHÂN VẬT]
         "Mô tả nhân vật..."
+        
+    Hoặc format mới:
+    
+        CHAR01_DAVIS_HAROLD_LOOK1: Ảnh toàn thân chụp studio...
 
     Trả về dict: key = tên file an toàn (NADINE_LECLERC), value = nội dung prompt.
     Ví dụ đầu ra:
         {
             "NADINE_LECLERC": "Ultra-realistic portrait...",
-            "RICHARD_ASHWORTH": "Ultra-realistic portrait...",
+            "CHAR01_DAVIS_HAROLD_LOOK1": "Ảnh toàn thân...",
         }
     """
     if not os.path.exists(path):
@@ -528,29 +532,38 @@ def parse_character_file(path: str) -> dict[str, str]:
         return {}
 
     result: dict[str, str] = {}
-    # Tách theo block bắt đầu bằng [TÊN]
+    
+    # 1. Parse theo format cũ [TÊN NHÂN VẬT]\nNội dung
     blocks = re.split(r"\n(?=\[)", text.strip())
     for block in blocks:
         block = block.strip()
         if not block:
             continue
-        # Dòng đầu phải là [TÊN NHÂN VẬT]
         header_match = re.match(r"^\[([^\]]+)\]", block)
-        if not header_match:
+        if header_match:
+            raw_name = header_match.group(1).strip()
+            file_key = re.sub(r"\s+", "_", raw_name.upper().strip())
+            file_key = re.sub(r"[^\w]", "", file_key)
+            body = block[header_match.end():].strip()
+            if body.startswith('"') and body.endswith('"'):
+                body = body[1:-1].strip()
+            if body:
+                result[file_key] = body
+
+    # 2. Parse theo format mới CHAR_NAME: Nội dung
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
             continue
-        raw_name = header_match.group(1).strip()
-
-        # Chuyển tên thành key file an toàn: "Nadine LeClerc" → "NADINE_LECLERC"
-        file_key = re.sub(r"\s+", "_", raw_name.upper().strip())
-        file_key = re.sub(r"[^\w]", "", file_key)  # chỉ giữ chữ, số, _
-
-        # Nội dung prompt: phần còn lại sau dòng header
-        body = block[header_match.end():].strip()
-        # Bỏ dấu ngoặc kép bọc ngoài nếu có
-        if body.startswith('"') and body.endswith('"'):
-            body = body[1:-1].strip()
-        if body:
-            result[file_key] = body
+        m = re.match(r"^([A-Z0-9_]+)\s*:\s*(.+)$", line)
+        if m:
+            file_key = m.group(1).strip()
+            if file_key not in result:
+                body = m.group(2).strip()
+                if body.startswith('"') and body.endswith('"'):
+                    body = body[1:-1].strip()
+                if body:
+                    result[file_key] = body
 
     return result
 
@@ -560,11 +573,13 @@ def parse_image_prompts_file(path: str) -> list[str]:
     Đọc file prompt_image.txt với format:
 
         Video 1: "Mô tả ảnh cảnh 1..."
+        
+    Hoặc:
+    
+        CẢNH 1: [CHỦ THỂ: ...] ...
 
-        Video 2: "Mô tả ảnh cảnh 2..."
-
-    Trả về danh sách nội dung prompt theo thứ tự Video 1, 2, 3...
-    Chỉ lấy nội dung, KHÔNG bao gồm "Video X:" prefix.
+    Trả về danh sách nội dung prompt theo thứ tự Cảnh 1, 2, 3...
+    Chỉ lấy nội dung, KHÔNG bao gồm "Video X:" hay "CẢNH X:" prefix.
     """
     if not os.path.exists(path):
         return []
@@ -574,9 +589,9 @@ def parse_image_prompts_file(path: str) -> list[str]:
     except Exception:
         return []
 
-    # Tìm tất cả block "Video N: ..."
+    # Tìm tất cả block "Video N: ..." hoặc "CẢNH N: ..."
     # Hỗ trợ cả 2 kiểu: có dấu ngoặc kép và không có
-    headers = list(re.finditer(r"(?im)^\s*video\s+(\d+)\s*:\s*", text))
+    headers = list(re.finditer(r"(?im)^\s*(?:video|cảnh|canh)\s+(\d+)\s*:\s*", text))
     prompts: list[str] = []
 
     for i, h in enumerate(headers):

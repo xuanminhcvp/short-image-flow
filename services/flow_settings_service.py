@@ -22,12 +22,48 @@ _SERVICE_DIR = Path(__file__).resolve().parent
 _CONFIG_FILE = _SERVICE_DIR.parent / "config" / "flow_ui_settings.txt"
 
 
+def _parse_range_or_float(val: str, default_min: float, default_max: float) -> tuple[float, float]:
+    """
+    Parse giá trị dạng "min - max" hoặc số đơn lẻ.
+
+    Ví dụ:
+        "1.5 - 3.5" -> (1.5, 3.5)
+        "2.0"       -> (2.0, 2.0)  (số đơn lẻ, min = max)
+
+    Nếu parse lỗi sẽ trả về giá trị mặc định.
+    """
+    val = str(val or "").strip()
+    # Kiểm tra dạng "min - max"
+    if "-" in val:
+        parts = val.split("-")
+        if len(parts) == 2:
+            try:
+                lo = float(parts[0].strip())
+                hi = float(parts[1].strip())
+                # Đảm bảo lo <= hi
+                return (min(lo, hi), max(lo, hi))
+            except Exception:
+                pass
+    # Dạng số đơn lẻ
+    try:
+        v = float(val)
+        return (v, v)
+    except Exception:
+        pass
+    return (default_min, default_max)
+
+
 def load_flow_ui_settings() -> dict:
     """
     Đọc file config/flow_ui_settings.txt và trả về dict cài đặt.
 
     Định dạng file:
         key = value   (# là comment, bỏ qua dòng trống)
+
+    Pipeline settings mới:
+        scene_execution_mode  : "serial" | "pipeline"
+        pipeline_max_in_flight: int - số prompt gửi song song tối đa
+        pipeline_send_gap_sec : float hoặc "min-max" - khoảng nghỉ giữa 2 lần gửi
     """
     defaults: dict = {
         "auto_apply": False,
@@ -37,6 +73,11 @@ def load_flow_ui_settings() -> dict:
         "multiplier": "x1",
         "model_name": "Nano Banana 2",
         "allow_model_alias_fallback": False,
+        # Pipeline defaults an toàn
+        "scene_execution_mode": "serial",
+        "pipeline_max_in_flight": 2,
+        "pipeline_send_gap_min": 1.5,  # kây - giá trị nhỏ nhất của khoảng nghỉ
+        "pipeline_send_gap_max": 3.5,  # giây - giá trị lớn nhất của khoảng nghỉ
     }
 
     if not _CONFIG_FILE.exists():
@@ -65,6 +106,22 @@ def load_flow_ui_settings() -> dict:
                 result["model_name"] = val
             elif key == "allow_model_alias_fallback":
                 result["allow_model_alias_fallback"] = val.lower() in {"true", "1", "yes"}
+            # — Pipeline settings mới —
+            elif key == "scene_execution_mode":
+                # Chỉ chấp nhận "serial" hoặc "pipeline", lấy lằn về serial nếu không nhận ra.
+                mode = val.lower()
+                result["scene_execution_mode"] = mode if mode in {"serial", "pipeline"} else "serial"
+            elif key == "pipeline_max_in_flight":
+                try:
+                    # Clamp trong khoảng hợp lệ 1-6 để tránh cấu hình quá cực.
+                    result["pipeline_max_in_flight"] = max(1, min(6, int(val)))
+                except Exception:
+                    pass
+            elif key == "pipeline_send_gap_sec":
+                # Hỗ trợ cả dạng "1.5 - 3.5" lẫn số đơn lẻ "2.0"
+                lo, hi = _parse_range_or_float(val, default_min=1.5, default_max=3.5)
+                result["pipeline_send_gap_min"] = max(0.5, lo)
+                result["pipeline_send_gap_max"] = max(result["pipeline_send_gap_min"], hi)
     except Exception as exc:
         import sys
         print(f"[flow_settings_service] Lỗi đọc {_CONFIG_FILE}: {exc}", file=sys.stderr)

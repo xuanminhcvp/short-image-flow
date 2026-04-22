@@ -8,6 +8,26 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 
+def _safe_prefix_for_glob(text: str, max_len: int = 50) -> str:
+    """
+    Chuẩn hóa prefix theo đúng quy tắc đặt tên của flow_image_service.download_flow_images.
+
+    Lý do:
+    - download_flow_images luôn "sanitize + hash" prefix trước khi ghi file.
+    - Nếu map service glob bằng prefix thô thì sẽ không tìm thấy file đã tải.
+    - Kết quả là log có thể hiện "saved>0" nhưng "generated_files=0".
+    """
+    raw_text = str(text or "")
+    name = re.sub(r"[^\w\sàáảãạăắặẳẵầấẩẫậêếệểễôốộổỗơớợởỡùúủũụưứựửữđ]", "", raw_text, flags=re.UNICODE)
+    name = re.sub(r"\s+", "_", name.strip())
+    import hashlib
+    digest = hashlib.sha1(raw_text.encode("utf-8")).hexdigest()[:10]
+    if not name:
+        return f"prompt_{digest}"
+    keep = max(1, int(max_len) - (len(digest) + 1))
+    return f"{name[:keep]}_{digest}"
+
+
 @dataclass
 class PromptMediaBatch:
     """
@@ -45,7 +65,9 @@ def _glob_generated_files(output_dir: str, prefix: str) -> list[str]:
     - <prefix>_img2.png
     - ...
     """
-    pattern = os.path.join(output_dir, f"{prefix}_img*.png")
+    # Dùng cùng rule "safe prefix" như lúc ghi file để không bị lệch tên.
+    safe_prefix = _safe_prefix_for_glob(prefix)
+    pattern = os.path.join(output_dir, f"{safe_prefix}_img*.png")
     return glob.glob(pattern)
 
 

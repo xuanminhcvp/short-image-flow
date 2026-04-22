@@ -603,6 +603,12 @@ def parse_image_prompts_file(path: str) -> list[str]:
         if body.startswith('"') and body.endswith('"'):
             body = body[1:-1].strip()
 
+        # Chuẩn hóa placeholder nhân vật để tránh Flow fail vì token lạ:
+        # {CHARACTER: CHAR04_BRITTANY_MILLER_HUMILIATED} -> "nhân vật"
+        body = re.sub(r"\{\s*character\s*:\s*[^{}]+\}", "nhân vật", body, flags=re.IGNORECASE)
+        # Gọn lại khoảng trắng sau khi thay placeholder.
+        body = re.sub(r"\s{2,}", " ", body).strip()
+
         if body:
             prompts.append(body)
 

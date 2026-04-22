@@ -109,11 +109,19 @@ class WorkerPool:
     async def stop_all(self):
         """Đóng tất cả trình duyệt."""
         for worker_id, context in self.contexts.items():
-            await context.close()
-            print(f"[*] Đã đóng Chrome {worker_id}")
+            try:
+                await context.close()
+                print(f"[*] Đã đóng Chrome {worker_id}")
+            except Exception as exc:
+                # Có thể context đã rớt kết nối trước đó (ví dụ user Ctrl+C).
+                # Không coi là lỗi nghiệp vụ tải ảnh, chỉ log để biết.
+                print(f"[WARN] Không đóng được context {worker_id}: {exc}")
         
         if self.playwright:
-            await self.playwright.stop()
+            try:
+                await self.playwright.stop()
+            except Exception as exc:
+                print(f"[WARN] Không stop được Playwright: {exc}")
 
     async def _close_all_existing_tabs(self, context) -> None:
         """

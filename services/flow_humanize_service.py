@@ -69,8 +69,17 @@ async def has_unusual_activity_ui_error(page) -> bool:
         "we noticed some unusual activity",
         "hoạt động bất thường",
         "hoat dong bat thuong",
+        # Rate limit kiểu "tạo quá nhanh" trên Flow.
+        "yêu cầu tạo quá nhanh",
+        "yeu cau tao qua nhanh",
+        "ban dang yeu cau tao qua nhanh",
+        "too many requests",
+        "requesting too fast",
+        "you are requesting too fast",
         "try again later",
         "thử lại sau",
+        "vui lòng đợi một chút rồi thử lại",
+        "vui long doi mot chut roi thu lai",
     )
     try:
         text = await page.evaluate(
@@ -96,7 +105,10 @@ async def handle_unusual_activity_with_cooldown(page, stage_label: str = "") -> 
 
     tag = f"[{stage_label}] " if stage_label else ""
     cool = _jitter(FLOW_MAIN_UNUSUAL_COOLDOWN_SEC, floor=30)
-    print(f"[WARN] {tag}Phát hiện unusual activity. Cooldown {int(cool)}s rồi reload nhẹ.")
+    print(
+        f"[WARN] {tag}Phát hiện cảnh báo giới hạn/unusual (vd: tạo quá nhanh). "
+        f"Cooldown {int(cool)}s rồi reload nhẹ."
+    )
     await asyncio.sleep(cool)
 
     try:
@@ -105,4 +117,3 @@ async def handle_unusual_activity_with_cooldown(page, stage_label: str = "") -> 
     except Exception as e:
         print(f"[WARN] {tag}Reload sau cooldown gặp lỗi: {e}")
     return True
-

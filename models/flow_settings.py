@@ -8,6 +8,6 @@ class FlowSettings:
     top_mode: str = "image"
     secondary_mode: str = ""
     aspect_ratio: str = "16:9"
-    multiplier: str = "x2"
-    model_name: str = "Nano Banana Pro"
+    multiplier: str = "x1"
+    model_name: str = "Nano Banana 2"
     allow_model_alias_fallback: bool = False

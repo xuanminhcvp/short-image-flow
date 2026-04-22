@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import os
 import re
 import time
@@ -44,9 +45,17 @@ def _safe_filename(text: str, max_len: int = 50) -> str:
     Tạo tên file an toàn từ text prompt.
     Loại bỏ ký tự đặc biệt, giữ chữ/số/dấu gạch dưới.
     """
-    name = re.sub(r"[^\w\sàáảãạăắặẳẵầấẩẫậêếệểễôốộổỗơớợởỡùúủũụưứựửữđ]", "", text, flags=re.UNICODE)
+    raw_text = str(text or "")
+    name = re.sub(r"[^\w\sàáảãạăắặẳẵầấẩẫậêếệểễôốộổỗơớợởỡùúủũụưứựửữđ]", "", raw_text, flags=re.UNICODE)
     name = re.sub(r"\s+", "_", name.strip())
-    return name[:max_len] or "prompt"
+    # Luôn gắn hậu tố hash để tránh trùng tên khi prefix dài bị cắt.
+    # Ví dụ: job_id dài có thể làm mất phần "_001", "_002" nếu chỉ cắt chuỗi thuần.
+    digest = hashlib.sha1(raw_text.encode("utf-8")).hexdigest()[:10]
+    if not name:
+        return f"prompt_{digest}"
+    # Dành chỗ cho "_{digest}" để mỗi prefix luôn tạo tên file khác nhau.
+    keep = max(1, int(max_len) - (len(digest) + 1))
+    return f"{name[:keep]}_{digest}"
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -377,7 +386,57 @@ async def download_flow_images(
     for idx, src in enumerate(srcs_to_download):
         filepath = os.path.join(output_dir, f"{safe_prefix}_img{idx + 1}.png")
         try:
-            # ── Phương thức 1: Fetch API ──
+            # ── Phương thức 1: Request từ BrowserContext (ổn định hơn evaluate/fetch) ──
+            if src.startswith("http"):
+                request_errors: list[str] = []
+                for attempt in range(1, 4):
+                    try:
+                        resp = await page.context.request.get(src, timeout=45000)
+                        status = int(resp.status or 0)
+                        ct = str(resp.headers.get("content-type", "") or "").lower()
+                        raw = await resp.body()
+                        size_kb = max(0, len(raw) // 1024)
+                        looks_like_image = ct.startswith("image/")
+                        if not looks_like_image and raw[:8] in (
+                            b"\x89PNG\r\n\x1a\n",
+                            b"\xff\xd8\xff\xe0",
+                            b"\xff\xd8\xff\xe1",
+                            b"\xff\xd8\xff\xdb",
+                            b"RIFF",
+                        ):
+                            looks_like_image = True
+
+                        if 200 <= status < 300 and looks_like_image and len(raw) > 1024:
+                            with open(filepath, "wb") as f:
+                                f.write(raw)
+                            _cb(
+                                f"Đã lưu: {os.path.basename(filepath)} ({size_kb}KB) "
+                                f"[request, attempt={attempt}, status={status}]",
+                                "OK",
+                            )
+                            saved += 1
+                            break
+
+                        request_errors.append(
+                            f"attempt={attempt}, status={status}, ct='{ct or 'n/a'}', size={size_kb}KB"
+                        )
+                    except Exception as exc:
+                        request_errors.append(f"attempt={attempt}, exc={exc}")
+
+                    await asyncio.sleep(0.6 * attempt)
+
+                if saved > idx:
+                    # Ảnh hiện tại đã save thành công.
+                    continue
+
+                if request_errors:
+                    _cb(
+                        f"request.get chưa lấy được ảnh cho src#{idx + 1}: "
+                        + " | ".join(request_errors),
+                        "WARN",
+                    )
+
+            # ── Phương thức 2: Fetch API trong page ──
             if src.startswith("http"):
                 data = await page.evaluate(
                     """
@@ -401,7 +460,7 @@ async def download_flow_images(
                         f.write(raw)
                     size_kb = os.path.getsize(filepath) // 1024
                     if size_kb > 5:
-                        _cb(f"Đã lưu: {os.path.basename(filepath)} ({size_kb}KB)", "OK")
+                        _cb(f"Đã lưu: {os.path.basename(filepath)} ({size_kb}KB) [evaluate/fetch]", "OK")
                         saved += 1
                         continue
 

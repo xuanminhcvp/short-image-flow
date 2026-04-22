@@ -10,10 +10,10 @@ from models.worker_config import WorkerConfig
 from models.image_job import ImageJob
 from models.flow_settings import FlowSettings
 from services.worker_pool_service import WorkerPool
-from services.flow_generate_service import generate_images_from_job
-from services.prompt_service import parse_character_file, parse_image_prompts_file, SCENARIO_CHARACTER_FILE, SCENARIO_IMAGE_FILE
-# Đọc pipeline config từ file cài đặt dùng chung
+from services.flow_scene_generate_service import generate_scene_images_from_job
+from services.prompt_service import parse_image_prompts_file, SCENARIO_IMAGE_FILE
 from services.flow_settings_service import load_flow_ui_settings
+from services.flow_settings_service import apply_flow_generation_settings_panel
 from services.run_cleanup_service import cleanup_scenario_media_files
 
 def _parse_args():
@@ -22,7 +22,10 @@ def _parse_args():
     - --no-proxy   : chạy bằng mạng thật, không gán proxy vào worker.
     - --scenario   : chỉ chạy kịch bản chỉ định.
     - --scene-mode : override chế độ chạy (ghi đè lên flow_ui_settings.txt nếu truyền vào).
-    Lưu ý: Nếu KHÔNG truyền --scene-mode thì rúner sẽ tự đọc từ flow_ui_settings.txt.
+    Lưu ý: Nếu KHÔNG truyền --scene-mode thì runner sẽ tự đọc từ flow_ui_settings.txt.
+      Hỗ trợ nhập:
+      + A  -> tự đổi thành kich_ban_A
+      + kich_ban_A -> dùng nguyên văn
     """
     parser = argparse.ArgumentParser(description="Runner đơn giản cho luồng tạo ảnh theo kịch bản.")
     parser.add_argument(
@@ -39,20 +42,20 @@ def _parse_args():
         "--scene-mode",
         type=str,
         choices=["serial", "pipeline"],
-        default=None,  # None = lấy từ config file
+        default=None,  # None = lấy từ file config
         help="Override chế độ chạy prompt scene. Nếu bỏ qua, lấy từ flow_ui_settings.txt."
     )
     parser.add_argument(
         "--pipeline-max-inflight",
         type=int,
-        default=None,
+        default=None,  # None = lấy từ file config
         help="Số prompt scene tối đa đang chạy đồng thời trong mode pipeline."
     )
     parser.add_argument(
         "--pipeline-send-gap-sec",
         type=float,
-        default=None,
-        help="Khoảng nghỉ (giây) giữa 2 lần gửi prompt liên tiếp trong mode pipeline."
+        default=None,  # None = lấy từ file config
+        help="Override khoảng nghỉ (giây) giữa 2 lần gửi prompt liên tiếp."
     )
     return parser.parse_args()
 
@@ -69,6 +72,32 @@ def _normalize_scenario_name(raw_name: str | None) -> str | None:
     if name.startswith("kich_ban_"):
         return name
     return f"kich_ban_{name}"
+
+
+async def _generate_scene_images_with_ui_settings(page, job: ImageJob):
+    """
+    Runner scene-only nhưng vẫn áp panel settings trước khi generate scene.
+
+    Request gửi đi:
+    1) (Nếu auto_apply=true) click chọn mode/model/ratio/multiplier trên panel.
+    2) Gửi prompt scene và tải ảnh output.
+
+    Response nhận về:
+    - Danh sách URL ảnh mới của stage scene.
+    """
+    # Bước này giúp main_runner_no_reference vẫn dùng chuẩn cài đặt từ flow_ui_settings.txt
+    # mà không cần đi qua orchestrator có stage reference.
+    if job.settings and job.settings.auto_apply:
+        await apply_flow_generation_settings_panel(
+            page,
+            top_mode=job.settings.top_mode,
+            secondary_mode=job.settings.secondary_mode,
+            aspect_ratio=job.settings.aspect_ratio,
+            multiplier=job.settings.multiplier,
+            model_name=job.settings.model_name,
+            allow_model_alias_fallback=job.settings.allow_model_alias_fallback,
+        )
+    return await generate_scene_images_from_job(page, job)
 
 
 async def main(args):
@@ -98,12 +127,12 @@ async def main(args):
         f"(lỗi: {cleanup_report.get('failed', 0)})."
     )
 
-    # 2. Đọc cài đặt UI từ file config (bao gồm pipeline settings mới)
+    # 2. Đọc cài đặt UI từ file config (bao gồm pipeline settings).
     ui_cfg = load_flow_ui_settings()
 
-    # Giải quyết thứ tự ưu tiên:
-    #   1. CLI args tường minh (--scene-mode, --pipeline-max-inflight) → ưu tiên nhất
-    #   2. flow_ui_settings.txt → mặc định khi không truyền CLI
+    # Thứ tự ưu tiên:
+    # 1) CLI args nếu có truyền.
+    # 2) flow_ui_settings.txt khi CLI bỏ trống.
     effective_scene_mode = (
         str(args.scene_mode).strip().lower()
         if args.scene_mode is not None
@@ -114,28 +143,46 @@ async def main(args):
         if args.pipeline_max_inflight is not None
         else max(1, int(ui_cfg.get("pipeline_max_in_flight", 2) or 2))
     )
-    # Khoảng nghỉ ngẫu nhiên: lấy min/max từ config.
-    # Được lưu riêng pipeline_send_gap_min và pipeline_send_gap_max trong ui_cfg.
-    effective_gap_min = float(ui_cfg.get("pipeline_send_gap_min", 1.5) or 1.5)
-    effective_gap_max = float(ui_cfg.get("pipeline_send_gap_max", 3.5) or 3.5)
+    if args.pipeline_send_gap_sec is not None:
+        gap_val = max(0.5, float(args.pipeline_send_gap_sec))
+        effective_gap_min = gap_val
+        effective_gap_max = gap_val
+    else:
+        effective_gap_min = float(ui_cfg.get("pipeline_send_gap_min", 1.5) or 1.5)
+        effective_gap_max = float(ui_cfg.get("pipeline_send_gap_max", 3.5) or 3.5)
 
-    # In tóm tắt cấu hình pipeline hiệu dụng để debug nhanh.
     if effective_scene_mode == "pipeline":
         print(
             f"[pipeline] mode=pipeline | max_in_flight={effective_max_in_flight} | "
             f"send_gap=[{effective_gap_min:.1f} - {effective_gap_max:.1f}]s"
         )
     else:
-        print(f"[pipeline] mode=serial (chạy tuần tự)")
+        print("[pipeline] mode=serial (chạy tuần tự)")
 
     # 3. Xây dựng danh sách ImageJobs
     jobs = []
-    # Setting (Dùng tạm mặc định 16:9, sau này bạn update có thể dùng hàm đọc file UI)
-    default_settings = FlowSettings(aspect_ratio="16:9", model_name="Nano Banana Pro")
+    # Map đầy đủ FlowSettings từ flow_ui_settings.txt để apply panel đúng chuẩn.
+    default_settings = FlowSettings(
+        auto_apply=bool(ui_cfg.get("auto_apply", True)),
+        top_mode=str(ui_cfg.get("top_mode", "image") or "image"),
+        secondary_mode=str(ui_cfg.get("secondary_mode", "") or ""),
+        aspect_ratio=str(ui_cfg.get("aspect_ratio", "16:9") or "16:9"),
+        multiplier=str(ui_cfg.get("multiplier", "x1") or "x1"),
+        model_name=str(ui_cfg.get("model_name", "Nano Banana 2") or "Nano Banana 2"),
+        allow_model_alias_fallback=bool(ui_cfg.get("allow_model_alias_fallback", False)),
+    )
+    print(
+        "[panel] "
+        f"auto_apply={default_settings.auto_apply} | "
+        f"top_mode={default_settings.top_mode} | "
+        f"secondary_mode={default_settings.secondary_mode or '(none)'} | "
+        f"aspect_ratio={default_settings.aspect_ratio} | "
+        f"multiplier={default_settings.multiplier} | "
+        f"model={default_settings.model_name}"
+    )
 
     for folder in valid_folders:
         folder_path = os.path.join(scenarios_dir, folder)
-        char_file = os.path.join(folder_path, SCENARIO_CHARACTER_FILE)
         img_file = os.path.join(folder_path, SCENARIO_IMAGE_FILE)
 
         if not os.path.exists(img_file):
@@ -144,39 +191,37 @@ async def main(args):
 
         # Load prompts
         img_prompts = parse_image_prompts_file(img_file)
-        
-        # Load reference images (nếu kịch bản có ref)
-        reference_list = []
-        char_data = {}
-        if os.path.exists(char_file):
-            char_data = parse_character_file(char_file)
-            # Ở phần bản hoàn thiện, file tạo ra sẽ là dạng: folder_path/char_XXX.png
-            # Hiện tại cứ truyền một list dummy để đánh dấu là "CÓ REF" để engine nhận biết
-            for char_id in char_data.keys():
-                # Đường dẫn ảo tượng trưng, engine sẽ biết có nhân vật
-                reference_list.append(os.path.join(folder_path, f"{char_id}.png"))
 
         job = ImageJob(
             job_id=folder,
             prompts=img_prompts,
-            reference_images=reference_list if reference_list else None,
+            # Runner no-reference: luôn bỏ qua stage ảnh nhân vật.
+            # Để None nhằm đảm bảo không có reference input được đưa vào pipeline.
+            reference_images=None,
             output_dir=os.path.join(folder_path, "output"),
             settings=default_settings,
-            # Metadata điều khiển mode chạy stage scene.
-            # pipeline_send_gap_min / max được truyền xuống để flow_scene_generate_service
-            # và flow_prompt_pipeline_service biết khoảng nghỉ ngẫu nhiên.
+            # Metadata dành cho stage scene.
             metadata={
                 "scenario_dir": folder_path,
-                "character_prompts": char_data,
-                # Chế độ thực thi: "serial" hoặc "pipeline"
+                # Metadata điều khiển mode chạy stage scene.
+                # serial   : prompt 1 xong mới prompt 2.
+                # pipeline : gửi theo cửa sổ in-flight, map theo API/media_id.
                 "scene_execution_mode": effective_scene_mode,
-                # Số prompt tối đa gửi đồng thời
                 "pipeline_max_in_flight": effective_max_in_flight,
-                # Khoảng nghỉ ngẫu nhiên (min/max riêng để pipeline service tự random)
+                # Truyền khoảng min/max để pipeline service random đúng cấu hình file.
                 "pipeline_send_gap_min": effective_gap_min,
                 "pipeline_send_gap_max": effective_gap_max,
-                # Giữ lại key cũ để các service cũ không bị vỡ interface
+                # Giữ key cũ để tương thích ngược nếu service khác còn đọc key này.
                 "pipeline_send_gap_sec": (effective_gap_min + effective_gap_max) / 2,
+                # Ép timeout cho từng prompt scene (yêu cầu: 180s).
+                "scene_timeout_per_prompt_sec": 180,
+                # Timeout tối đa cho toàn bộ 1 kịch bản (yêu cầu: 30 phút).
+                "scenario_timeout_sec": 30 * 60,
+                # Mục tiêu mềm số ảnh mong muốn cho mỗi kịch bản.
+                # Hết 30 phút sẽ chốt số ảnh hiện có, không ném lỗi vì chưa đạt target.
+                "scene_min_success_images": 120,
+                # Retry lại prompt lỗi/timeout sau vòng pipeline chính.
+                "scene_retry_failed_rounds": 2,
             },
         )
         jobs.append(job)
@@ -232,16 +277,19 @@ async def main(args):
     pool = WorkerPool(configs=workers)
     try:
         await pool.start_all()
-        await pool.run_jobs_parallel(jobs, generate_images_from_job)
+        # Chạy scene-only nhưng vẫn apply panel settings trước mỗi job.
+        await pool.run_jobs_parallel(jobs, _generate_scene_images_with_ui_settings)
     finally:
         await pool.stop_all()
         print("Tất cả đã hoàn tất!")
 
 if __name__ == "__main__":
     cli_args = _parse_args()
-    # Phần in tóm tắt được in bên trong hàm main() sau khi đã giải quyết thứ tự ưu tiên
     try:
         asyncio.run(main(cli_args))
+    except KeyboardInterrupt:
+        # Người dùng chủ động Ctrl+C thì thoát êm, không in traceback gây hiểu nhầm lỗi logic.
+        print("\n[STOP] Đã dừng theo yêu cầu người dùng (Ctrl+C).")
     except Exception as exc:
         # In chi tiết traceback để dễ bắt lỗi khi chạy từ terminal.
         print(f"[FATAL] Runner bị lỗi chưa xử lý: {exc}")

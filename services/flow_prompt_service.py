@@ -142,29 +142,100 @@ async def type_flow_prompt(page, text: str) -> None:
     """
     Click ô nhập → xóa nội dung cũ → paste text mới vào ô prompt.
 
-    Dùng clipboard paste thay vì type từng ký tự vì:
-    - Nhanh hơn nhiều với prompt dài.
-    - Tránh lỗi IME với ký tự đặc biệt tiếng Việt.
+    Bản mới KHÔNG dùng clipboard hệ thống để tránh ảnh hưởng copy/paste của người dùng.
+    Thay vào đó:
+    - Set text trực tiếp vào input/contenteditable.
+    - Bắn sự kiện input/change để UI Flow nhận prompt mới.
     """
     # Focus vào ô nhập trước
     await find_and_focus_flow_prompt(page)
     await asyncio.sleep(0.1)
 
-    # Xóa nội dung cũ bằng Ctrl+A / Cmd+A → Backspace
-    select_all = "Meta+a" if platform.system() == "Darwin" else "Control+a"
-    await page.keyboard.press(select_all)
-    await asyncio.sleep(0.06)
-    await page.keyboard.press("Backspace")
-    await asyncio.sleep(0.08)
+    # Hàm kiểm tra nhanh ô prompt hiện có bao nhiêu ký tự (để tránh trường hợp Enter khi ô rỗng).
+    async def _read_prompt_len() -> int:
+        try:
+            val = await page.evaluate(
+                """
+                () => {
+                  const el = document.activeElement;
+                  if (!el) return '';
+                  const tag = String(el.tagName || '').toLowerCase();
+                  if (tag === 'textarea' || tag === 'input') return String(el.value || '');
+                  if (el.isContentEditable) return String(el.innerText || el.textContent || '');
+                  return '';
+                }
+                """
+            )
+            return len(str(val or "").strip())
+        except Exception:
+            return 0
 
-    # Paste qua clipboard (nhanh, ổn định với text dài)
-    await page.evaluate("(t) => navigator.clipboard.writeText(t)", text)
-    await asyncio.sleep(0.08)
-    paste_key = "Meta+v" if platform.system() == "Darwin" else "Control+v"
-    await page.keyboard.press(paste_key)
-    await asyncio.sleep(0.15)
+    # Cách chính: nhập bằng keyboard.insert_text (không dùng clipboard, ổn định với contenteditable).
+    inserted_ok = False
+    try:
+        select_all = "Meta+a" if platform.system() == "Darwin" else "Control+a"
+        await page.keyboard.press(select_all)
+        await asyncio.sleep(0.05)
+        await page.keyboard.press("Backspace")
+        await asyncio.sleep(0.08)
+        await page.keyboard.insert_text(text)
+        await asyncio.sleep(0.12)
+        inserted_ok = (await _read_prompt_len()) > 0
+    except Exception:
+        inserted_ok = False
 
-    _log(f"Đã paste prompt ({len(text)} ký tự)", "OK")
+    # Fallback 1: set trực tiếp value/textContent + dispatch input/change.
+    if not inserted_ok:
+        inserted_ok = await page.evaluate(
+            """
+            (t) => {
+              const el = document.activeElement;
+              if (!el) return false;
+              const tag = String(el.tagName || '').toLowerCase();
+              const isInput = (tag === 'textarea') || (tag === 'input');
+              const isEditable = !!el.isContentEditable;
+
+              if (isInput) {
+                el.focus();
+                el.value = String(t ?? '');
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+              }
+              if (isEditable) {
+                el.focus();
+                el.textContent = String(t ?? '');
+                el.dispatchEvent(new InputEvent('input', {
+                  bubbles: true,
+                  inputType: 'insertText',
+                  data: String(t ?? ''),
+                }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+              }
+              return false;
+            }
+            """,
+            text,
+        )
+        await asyncio.sleep(0.1)
+        inserted_ok = inserted_ok and (await _read_prompt_len()) > 0
+
+    # Fallback 2: thử fill qua locator nếu vẫn chưa có text.
+    if not inserted_ok:
+        el = await _find_flow_prompt_element(page)
+        if el:
+            try:
+                await el.fill(text)
+                await asyncio.sleep(0.1)
+                inserted_ok = (await _read_prompt_len()) > 0
+            except Exception:
+                inserted_ok = False
+
+    if inserted_ok:
+        _log(f"Đã nhập prompt trực tiếp ({len(text)} ký tự)", "OK")
+    else:
+        _log("Không xác nhận được nội dung prompt sau khi nhập", "WARN")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -200,7 +271,32 @@ async def send_flow_prompt(page) -> bool:
 
     await asyncio.sleep(0.08)
 
-    # ── Bước 2: Nhấn Enter ──
+    # ── Bước 2: Kiểm tra ô prompt có text chưa (tránh Enter khi rỗng gây toast lỗi) ──
+    try:
+        prompt_len = await page.evaluate(
+            """
+            () => {
+              const el = document.activeElement;
+              if (!el) return 0;
+              const tag = String(el.tagName || '').toLowerCase();
+              let txt = '';
+              if (tag === 'textarea' || tag === 'input') {
+                txt = String(el.value || '');
+              } else if (el.isContentEditable) {
+                txt = String(el.innerText || el.textContent || '');
+              }
+              return String(txt).trim().length;
+            }
+            """
+        )
+    except Exception:
+        prompt_len = 0
+
+    if int(prompt_len or 0) <= 0:
+        _log("Ô prompt đang rỗng, bỏ qua Enter để tránh lỗi submit rỗng", "WARN")
+        return False
+
+    # ── Bước 3: Nhấn Enter ──
     await page.keyboard.press("Enter")
     await asyncio.sleep(0.5)
     _log("Đã nhấn Enter gửi prompt", "OK")
